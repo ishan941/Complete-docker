@@ -1,17 +1,32 @@
 services:
-  react-app:
+  # Development service
+  react-app-dev:
     build:
       context: .
       dockerfile: Dockerfile
+      target: development  # Use development stage
 
     ports:
       - "5173:5173"
     environment:
       - CHOKIDAR_USEPOLLING=true
+      - NODE_ENV=development
 
     volumes:
       - .:/app
       - react-app-node-modules:/app/node_modules
+
+  # Production service
+  react-app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production  # Use production stage
+
+    ports:
+      - "80:80"
+    environment:
+      - NODE_ENV=production
 
 volumes:
   react-app-node-modules:

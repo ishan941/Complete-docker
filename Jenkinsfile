@@ -7,7 +7,7 @@ pipeline {
     // UNCOMMENT BELOW IF YOU HAVE CONFIGURED NODEJS IN JENKINS GLOBAL TOOLS
     // tools {
     //     // Use NodeJS tool (must be configured in Jenkins Global Tool Configuration)
-    //     nodejs 'NodeJS-20'  // This name should match what you configured in Jenkins
+    //     nodejs 'NodeJS-22'  // Updated to Node.js 22 for Vite compatibility
     // }
     
     // Environment variables available throughout the pipeline
@@ -20,11 +20,11 @@ pipeline {
         // DOCKER_REGISTRY = 'your-registry.com'
         // DOCKER_CREDENTIALS = 'docker-hub-credentials'
         
-        // Node.js version for compatibility
-        NODE_VERSION = '20'
+        // Node.js version for Vite compatibility (22.x required)
+        NODE_VERSION = '22'
         
         // Add common Node.js paths to PATH (fallback if tools not configured)
-        PATH = "/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/opt/node@20/bin:${env.PATH}"
+        PATH = "/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/opt/node@22/bin:${env.PATH}"
     }
     
     // Define the stages of the pipeline
@@ -51,25 +51,49 @@ pipeline {
                     
                     # Try to find and use existing Node.js installation
                     if command -v node >/dev/null 2>&1; then
-                        echo "✅ Node.js found: $(node --version)"
+                        NODE_CURRENT_VERSION=$(node --version | sed 's/v//')
+                        echo "✅ Node.js found: v$NODE_CURRENT_VERSION"
                         echo "✅ npm found: $(npm --version)"
+                        
+                        # Check if Node.js version meets Vite requirements (22.12+ or 20.19+)
+                        NODE_MAJOR=$(echo $NODE_CURRENT_VERSION | cut -d. -f1)
+                        NODE_MINOR=$(echo $NODE_CURRENT_VERSION | cut -d. -f2)
+                        
+                        if [ "$NODE_MAJOR" -lt 20 ] || ([ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -lt 19 ]); then
+                            echo "⚠️  Node.js $NODE_CURRENT_VERSION detected. Vite requires Node.js 20.19+ or 22.12+"
+                            echo "Attempting to upgrade Node.js..."
+                            UPGRADE_NEEDED=true
+                        elif [ "$NODE_MAJOR" -eq 21 ]; then
+                            echo "⚠️  Node.js $NODE_CURRENT_VERSION detected. Vite requires Node.js 20.19+ or 22.12+"
+                            echo "Attempting to upgrade Node.js..."
+                            UPGRADE_NEEDED=true
+                        else
+                            echo "✅ Node.js version is compatible with Vite"
+                            UPGRADE_NEEDED=false
+                        fi
                     else
                         echo "❌ Node.js not found in PATH"
-                        echo "Attempting to install Node.js via package manager..."
+                        UPGRADE_NEEDED=true
+                    fi
+                    
+                    if [ "$UPGRADE_NEEDED" = true ]; then
+                        echo "Installing/Upgrading to Node.js 22..."
                         
                         # Check if running on macOS with Homebrew
                         if command -v brew >/dev/null 2>&1; then
-                            echo "Installing Node.js via Homebrew..."
-                            brew install node@20 || true
-                            export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+                            echo "Installing Node.js 22 via Homebrew..."
+                            brew unlink node || true
+                            brew install node@22 || brew install node
+                            brew link --force node@22 || true
+                            export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
                         # Check if running on Linux
                         elif command -v apt >/dev/null 2>&1; then
-                            echo "Installing Node.js via apt..."
-                            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+                            echo "Installing Node.js 22 via apt..."
+                            curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
                             sudo apt-get install -y nodejs || true
                         else
                             echo "❌ Cannot install Node.js automatically"
-                            echo "Please install Node.js manually or configure NodeJS tool in Jenkins"
+                            echo "Please install Node.js 22+ manually or configure NodeJS tool in Jenkins"
                             exit 1
                         fi
                         
@@ -132,45 +156,96 @@ pipeline {
             }
         }
         
-        // Stage 4: Build Docker image
-        stage('Build Docker Image') {
-            steps {
-                echo "Building Docker image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+        // Stage 4: Build Docker Images (Production & Development)
+        stage('Build Docker Images') {
+            parallel {
+                // Build production image (optimized for size)
+                stage('Build Production Image') {
+                    steps {
+                        echo "Building production Docker image: ${DOCKER_IMAGE}-prod:${DOCKER_TAG}"
+                        
+                        script {
+                            // Build production Docker image using multi-stage build
+                            def prodImage = docker.build("${DOCKER_IMAGE}-prod:${DOCKER_TAG}", "--target production .")
+                            
+                            // Also tag as 'latest' for convenience
+                            sh "docker tag ${DOCKER_IMAGE}-prod:${DOCKER_TAG} ${DOCKER_IMAGE}-prod:latest"
+                            
+                            // Show image size
+                            sh "docker images ${DOCKER_IMAGE}-prod:${DOCKER_TAG}"
+                        }
+                    }
+                }
                 
-                script {
-                    // Build Docker image using the Dockerfile
-                    def dockerImage = docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
-                    
-                    // Also tag as 'latest' for convenience
-                    sh "docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest"
+                // Build development image (for testing)
+                stage('Build Development Image') {
+                    steps {
+                        echo "Building development Docker image: ${DOCKER_IMAGE}-dev:${DOCKER_TAG}"
+                        
+                        script {
+                            // Build development Docker image
+                            def devImage = docker.build("${DOCKER_IMAGE}-dev:${DOCKER_TAG}", "--target development .")
+                            
+                            // Also tag as 'latest' for convenience
+                            sh "docker tag ${DOCKER_IMAGE}-dev:${DOCKER_TAG} ${DOCKER_IMAGE}-dev:latest"
+                        }
+                    }
                 }
             }
         }
         
-        // Stage 5: Test Docker image (optional)
-        stage('Test Docker Image') {
-            steps {
-                echo 'Testing Docker image...'
+        // Stage 5: Test Docker Images
+        stage('Test Docker Images') {
+            parallel {
+                // Test production image
+                stage('Test Production Image') {
+                    steps {
+                        echo 'Testing production Docker image...'
+                        
+                        script {
+                            sh '''
+                                # Start production container in detached mode
+                                docker run -d --name test-prod-container -p 8081:80 ${DOCKER_IMAGE}-prod:${DOCKER_TAG}
+                                
+                                # Wait a few seconds for the container to start
+                                sleep 10
+                                
+                                # Check if container is running
+                                docker ps | grep test-prod-container
+                                
+                                # Test if the application responds
+                                curl -f http://localhost:8081 || echo "Production app not responding yet"
+                                
+                                # Clean up test container
+                                docker stop test-prod-container
+                                docker rm test-prod-container
+                            '''
+                        }
+                    }
+                }
                 
-                script {
-                    // Run a quick test to ensure the container starts properly
-                    sh '''
-                        # Start container in detached mode
-                        docker run -d --name test-container -p 5174:5173 ${DOCKER_IMAGE}:${DOCKER_TAG}
+                // Test development image
+                stage('Test Development Image') {
+                    steps {
+                        echo 'Testing development Docker image...'
                         
-                        # Wait a few seconds for the container to start
-                        sleep 10
-                        
-                        # Check if container is running
-                        docker ps | grep test-container
-                        
-                        # Optional: Test if the application responds
-                        # curl -f http://localhost:5174 || echo "Application not responding yet"
-                        
-                        # Clean up test container
-                        docker stop test-container
-                        docker rm test-container
-                    '''
+                        script {
+                            sh '''
+                                # Start development container in detached mode (quick test)
+                                docker run -d --name test-dev-container -p 5174:5173 ${DOCKER_IMAGE}-dev:${DOCKER_TAG}
+                                
+                                # Wait a few seconds for the container to start
+                                sleep 15
+                                
+                                # Check if container is running
+                                docker ps | grep test-dev-container
+                                
+                                # Clean up test container (dev server takes longer to start)
+                                docker stop test-dev-container
+                                docker rm test-dev-container
+                            '''
+                        }
+                    }
                 }
             }
         }
@@ -247,15 +322,24 @@ pipeline {
             
             // Clean up Docker images to save space
             sh '''
-                # Remove old images (keep last 5 builds)
-                docker images ${DOCKER_IMAGE} --format "table {{.Tag}}" | grep -E "^[0-9]+$" | sort -nr | tail -n +6 | xargs -I {} docker rmi ${DOCKER_IMAGE}:{} || true
+                # Remove old production images (keep last 3 builds)
+                docker images ${DOCKER_IMAGE}-prod --format "table {{.Tag}}" | grep -E "^[0-9]+$" | sort -nr | tail -n +4 | xargs -I {} docker rmi ${DOCKER_IMAGE}-prod:{} || true
                 
-                # Clean up dangling images
+                # Remove old development images (keep last 3 builds)
+                docker images ${DOCKER_IMAGE}-dev --format "table {{.Tag}}" | grep -E "^[0-9]+$" | sort -nr | tail -n +4 | xargs -I {} docker rmi ${DOCKER_IMAGE}-dev:{} || true
+                
+                # Clean up dangling images to save space
                 docker image prune -f || true
+                
+                # Show remaining images and disk usage
+                echo "Remaining Docker images:"
+                docker images | grep ${DOCKER_IMAGE} || echo "No project images found"
+                echo "Docker disk usage:"
+                docker system df
             '''
             
             // Archive build artifacts (optional)
-            // archiveArtifacts artifacts: 'dist/**/*', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'dist/**/*', allowEmptyArchive: true
             
             // Publish test results (if you have tests)
             // publishTestResults testResultsPattern: 'test-results.xml'

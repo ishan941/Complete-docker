@@ -1,31 +1,58 @@
 
-# Base Image pulled from docker hub
-# lightweight
-# Ready to use react app environment inside container
-FROM node:20-alpine
+# Multi-stage build for optimized production image
+# Stage 1: Build stage
+FROM node:22-alpine AS builder
 
-# set working directory to app
+# Set working directory
 WORKDIR /app
 
-
-# Copy package.json and package.lock to working directory
-# It enhance caching mechanishm
-# it prevent from re ruing npm install commands
-# Increase Build speed 
+# Copy package files first for better caching
 COPY package*.json ./
 
-# It creates node_module folder inside container
-RUN npm install
+# Install dependencies (including dev dependencies for build)
+RUN npm ci --only=production=false
 
-
-# Copies all the files and folders inside the container
+# Copy source code
 COPY . .
 
+# Build the application
+RUN npm run build
 
-# Expose to 5173 port
+# Stage 2: Production stage
+FROM nginx:alpine AS production
+
+# Copy built assets from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy custom nginx configuration (optional)
+# COPY nginx.conf /etc/nginx/nginx.conf
+
+# Expose port 80
+EXPOSE 80
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
+
+# Development stage (for local development)
+FROM node:22-alpine AS development
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install all dependencies (including dev dependencies)
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Expose port 5173 for Vite dev server
 EXPOSE 5173
 
-CMD ["npm","run","dev"]
+# Start development server
+CMD ["npm", "run", "dev"]
 
 
 
