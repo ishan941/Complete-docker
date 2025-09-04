@@ -3,6 +3,13 @@ pipeline {
     // 'any' means Jenkins can use any available agent
     agent any
     
+    // Define tools needed for this pipeline
+    // UNCOMMENT BELOW IF YOU HAVE CONFIGURED NODEJS IN JENKINS GLOBAL TOOLS
+    // tools {
+    //     // Use NodeJS tool (must be configured in Jenkins Global Tool Configuration)
+    //     nodejs 'NodeJS-20'  // This name should match what you configured in Jenkins
+    // }
+    
     // Environment variables available throughout the pipeline
     environment {
         // Docker image name and tag
@@ -15,6 +22,9 @@ pipeline {
         
         // Node.js version for compatibility
         NODE_VERSION = '20'
+        
+        // Add common Node.js paths to PATH (fallback if tools not configured)
+        PATH = "/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/opt/node@20/bin:${env.PATH}"
     }
     
     // Define the stages of the pipeline
@@ -30,16 +40,69 @@ pipeline {
             }
         }
         
+        // Stage 1.5: Setup Node.js (if not available via tools)
+        stage('Setup Node.js') {
+            steps {
+                echo 'Setting up Node.js environment...'
+                
+                sh '''
+                    echo "Checking Node.js availability..."
+                    echo "Current PATH: $PATH"
+                    
+                    # Try to find and use existing Node.js installation
+                    if command -v node >/dev/null 2>&1; then
+                        echo "✅ Node.js found: $(node --version)"
+                        echo "✅ npm found: $(npm --version)"
+                    else
+                        echo "❌ Node.js not found in PATH"
+                        echo "Attempting to install Node.js via package manager..."
+                        
+                        # Check if running on macOS with Homebrew
+                        if command -v brew >/dev/null 2>&1; then
+                            echo "Installing Node.js via Homebrew..."
+                            brew install node@20 || true
+                            export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+                        # Check if running on Linux
+                        elif command -v apt >/dev/null 2>&1; then
+                            echo "Installing Node.js via apt..."
+                            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+                            sudo apt-get install -y nodejs || true
+                        else
+                            echo "❌ Cannot install Node.js automatically"
+                            echo "Please install Node.js manually or configure NodeJS tool in Jenkins"
+                            exit 1
+                        fi
+                        
+                        # Verify installation
+                        if command -v node >/dev/null 2>&1; then
+                            echo "✅ Node.js installed: $(node --version)"
+                            echo "✅ npm available: $(npm --version)"
+                        else
+                            echo "❌ Node.js installation failed"
+                            exit 1
+                        fi
+                    fi
+                '''
+            }
+        }
+        
         // Stage 2: Install dependencies and run tests
         stage('Install Dependencies & Test') {
             steps {
                 echo 'Installing Node.js dependencies...'
                 
-                // Install Node.js dependencies
+                // Verify Node.js and npm are available, then install dependencies
                 sh '''
                     echo "Current directory: $(pwd)"
                     echo "Listing files:"
                     ls -la
+                    
+                    # Verify Node.js and npm installation
+                    echo "Checking Node.js version:"
+                    node --version || echo "Node.js not found in PATH"
+                    
+                    echo "Checking npm version:"
+                    npm --version || echo "npm not found in PATH"
                     
                     # Install dependencies
                     npm install
