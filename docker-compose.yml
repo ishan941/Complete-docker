@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: development  # Use development stage
+      target: development # Use development stage
 
     ports:
       - "5173:5173"
@@ -21,7 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: production  # Use production stage
+      target: production # Use production stage
 
     ports:
       - "80:80"
