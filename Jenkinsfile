@@ -6,6 +6,12 @@ pipeline{
                 echo 'Hello, jenkins'
             }
         }
+        stage('Checkout'){
+            steps{
+                echo 'Checking out source code..'
+                checkout scm
+            }
+        }
     }
 }
   
